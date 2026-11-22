@@ -1,10 +1,31 @@
 const express = require('express');
+const os = require('os');
+const jwt = require('jsonwebtoken');
 const bwipjs = require('bwip-js');
 const db = require('../db');
-const { authenticateToken } = require('../middlewares/auth');
+const { authenticateToken, JWT_SECRET } = require('../middlewares/auth');
 const { sendBookletSubmissionEmail } = require('../services/mailer');
 
 const router = express.Router();
+
+function getLanIpv4Addresses() {
+  const nets = os.networkInterfaces();
+  const ips = [];
+  for (const name of Object.keys(nets)) {
+    for (const net of nets[name] || []) {
+      if (net.family === 'IPv4' && !net.internal) {
+        ips.push({ interface: name, address: net.address });
+      }
+    }
+  }
+  // Prefer standard Wi-Fi / LAN ranges (192.168.x.x, 10.x.x.x, 172.16-31.x.x)
+  ips.sort((a, b) => {
+    const score = (ip) =>
+      ip.startsWith('192.168.') ? 0 : ip.startsWith('10.') ? 1 : ip.startsWith('172.') ? 2 : 3;
+    return score(a.address) - score(b.address);
+  });
+  return ips;
+}
 
 // GET /api/barcode?value=UoK/2024/IT/001 (Public image endpoint for <img src="..."> in booklets)
 router.get('/barcode', async (req, res) => {
@@ -23,6 +44,29 @@ router.get('/barcode', async (req, res) => {
   } catch (err) {
     console.error('Barcode generation error:', err);
     res.status(500).send('Barcode error');
+  }
+});
+
+// GET /api/qrcode?value=... (Public QR code PNG generator for Mobile Phone Scanner pairing)
+router.get('/qrcode', async (req, res) => {
+  try {
+    const value = req.query.value;
+    if (!value) {
+      return res.status(400).send('Missing QR value');
+    }
+    const pngBuffer = await bwipjs.toBuffer({
+      bcid: 'qrcode',
+      text: String(value),
+      scale: 5,
+      paddingwidth: 4,
+      paddingheight: 4,
+      eclevel: 'M',
+    });
+    res.set('Content-Type', 'image/png');
+    res.send(pngBuffer);
+  } catch (err) {
+    console.error('QR code generation error:', err);
+    res.status(500).send('QR code error');
   }
 });
 
@@ -192,6 +236,100 @@ router.post('/verify', async (req, res) => {
   } catch (err) {
     console.error('Verification error:', err);
     return res.status(500).json({ error: 'Failed to verify student booklet' });
+  }
+});
+
+// POST /api/invigilator/mobile-pair - Generate a short-lived pairing token + LAN IPs for phone scanning
+router.post('/mobile-pair', async (req, res) => {
+  try {
+    const { room_id, room_name, exam_date, module_code, action } = req.body || {};
+    const lanIps = getLanIpv4Addresses();
+    const pairPayload = {
+      id: req.user.id,
+      email: req.user.email,
+      firstname: req.user.firstname,
+      lastname: req.user.lastname,
+      user_type: req.user.user_type,
+      invigilator_id: req.user.invigilator_id || null,
+      mobile_pair: true,
+      room_id: room_id || null,
+      room_name: room_name || null,
+      exam_date: exam_date || null,
+      module_code: module_code || null,
+      action: action || 'Submitted',
+    };
+
+    const pairToken = jwt.sign(pairPayload, JWT_SECRET, { expiresIn: '4h' });
+
+    return res.json({
+      pairToken,
+      lanIps,
+      primaryIp: lanIps.length > 0 ? lanIps[0].address : null,
+      session: {
+        room_id: pairPayload.room_id,
+        room_name: pairPayload.room_name,
+        exam_date: pairPayload.exam_date,
+        module_code: pairPayload.module_code,
+        action: pairPayload.action,
+      },
+    });
+  } catch (err) {
+    console.error('Mobile pair error:', err);
+    return res.status(500).json({ error: 'Failed to create mobile scanner pairing link' });
+  }
+});
+
+// GET /api/invigilator/mobile-session - Return active session info & live progress for paired mobile scanner
+router.get('/mobile-session', async (req, res) => {
+  try {
+    const { room_id, exam_date, module_code } = req.user;
+    const plansRes = await db.query(`
+      SELECT ep.id, ep.room_id, ep.exam_date, ep.module_code, ep.reg_number,
+             ep.booklet_code, ep.seat_number, ep.exam_status,
+             s.firstname, s.lastname, m.module_name, r.room AS room_name
+      FROM exam_plan ep
+      JOIN student s ON ep.reg_number = s.reg_number
+      JOIN module m ON ep.module_code = m.module_code
+      JOIN room r ON ep.room_id = r.room_id
+      ORDER BY ep.seat_number ASC, ep.id ASC
+    `);
+
+    let items = plansRes.rows.map((p) => ({
+      ...p,
+      exam_date: p.exam_date instanceof Date ? p.exam_date.toISOString().split('T')[0] : String(p.exam_date).split('T')[0],
+    }));
+
+    if (room_id) items = items.filter((p) => Number(p.room_id) === Number(room_id));
+    if (exam_date) items = items.filter((p) => p.exam_date === exam_date);
+    if (module_code) items = items.filter((p) => p.module_code.toLowerCase() === String(module_code).toLowerCase());
+
+    const submitted = items.filter((p) => p.exam_status === 'Submitted').length;
+    const present = items.filter((p) => p.exam_status === 'Present').length;
+    const notSubmitted = items.filter((p) => p.exam_status === 'Not Submitted').length;
+
+    return res.json({
+      invigilator: {
+        firstname: req.user.firstname,
+        lastname: req.user.lastname,
+        email: req.user.email,
+      },
+      session: {
+        room_id: room_id || null,
+        room_name: req.user.room_name || (items[0]?.room_name || 'All Assigned Rooms'),
+        exam_date: exam_date || (items[0]?.exam_date || 'All Dates'),
+        module_code: module_code || null,
+        action: req.user.action || 'Submitted',
+      },
+      stats: {
+        total: items.length,
+        submitted,
+        present,
+        notSubmitted,
+      },
+    });
+  } catch (err) {
+    console.error('Mobile session error:', err);
+    return res.status(500).json({ error: 'Failed to load mobile scanner session' });
   }
 });
 

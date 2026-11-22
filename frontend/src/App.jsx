@@ -21,6 +21,7 @@ import {
   TimetableAndReportsPage,
 } from './pages/officer/OfficerPages';
 import InvigilatorPage from './pages/invigilator/InvigilatorPage';
+import MobileScannerPage from './pages/invigilator/MobileScannerPage';
 import { DasDashboard, DasSchoolsAndProgramsPage } from './pages/das/DasPages';
 
 function ProtectedRoute({ children }) {
@@ -70,8 +71,9 @@ export default function App() {
           <Route path="/officer/view-timetable" element={<ProtectedRoute><TimetableAndReportsPage mode="booklets" /></ProtectedRoute>} />
           <Route path="/officer/reports" element={<ProtectedRoute><TimetableAndReportsPage mode="reports" /></ProtectedRoute>} />
 
-          {/* Invigilator Route */}
+          {/* Invigilator Routes */}
           <Route path="/invigilator" element={<ProtectedRoute><InvigilatorPage /></ProtectedRoute>} />
+          <Route path="/mobile-scanner" element={<MobileScannerPage />} />
 
           {/* DAS (Director of Academic Services) Routes */}
           <Route path="/das" element={<ProtectedRoute><DasDashboard /></ProtectedRoute>} />

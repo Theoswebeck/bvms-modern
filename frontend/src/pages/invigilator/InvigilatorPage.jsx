@@ -6,8 +6,12 @@ import {
   AlertCircle,
   Calendar,
   X,
+  Smartphone,
+  Copy,
+  Check,
+  Wifi,
 } from 'lucide-react';
-import api from '../../api/client';
+import api, { API_BASE_URL } from '../../api/client';
 import DataTable from '../../components/DataTable';
 
 export default function InvigilatorPage() {
@@ -22,6 +26,12 @@ export default function InvigilatorPage() {
   const [verifyAction, setVerifyAction] = useState('Submitted');
   const [cameraOpen, setCameraOpen] = useState(false);
   const [alert, setAlert] = useState(null);
+  const [mobileModalOpen, setMobileModalOpen] = useState(false);
+  const [mobilePairData, setMobilePairData] = useState(null);
+  const [selectedLanIp, setSelectedLanIp] = useState('');
+  const [customBaseUrl, setCustomBaseUrl] = useState('');
+  const [copiedLink, setCopiedLink] = useState(false);
+  const [pairingLoading, setPairingLoading] = useState(false);
   const scannerRef = useRef(null);
 
   const loadData = () => {
@@ -37,7 +47,52 @@ export default function InvigilatorPage() {
 
   useEffect(() => {
     loadData();
+    // Auto-sync roster every 4 seconds so scans from a paired mobile phone appear live on laptop
+    const interval = setInterval(() => {
+      api.get('/officer/exam-plans').then((res) => setPlans(res.data.examPlans)).catch(() => {});
+    }, 4000);
+    return () => clearInterval(interval);
   }, []);
+
+  const openMobilePairing = async () => {
+    setPairingLoading(true);
+    setAlert(null);
+    try {
+      const activeRoom = assignments.find((a) => String(a.room_id) === String(selectedRoomId));
+      const res = await api.post('/invigilator/mobile-pair', {
+        room_id: selectedRoomId || undefined,
+        room_name: activeRoom?.room_name || undefined,
+        exam_date: selectedDate || undefined,
+        module_code: selectedModule || undefined,
+        action: verifyAction,
+      });
+      setMobilePairData(res.data);
+      const defaultIp = res.data.primaryIp || window.location.hostname;
+      setSelectedLanIp(defaultIp);
+      setCustomBaseUrl('');
+      setCopiedLink(false);
+      setMobileModalOpen(true);
+    } catch (err) {
+      setAlert({
+        type: 'error',
+        text: err.response?.data?.error || 'Could not generate mobile scanner QR code. Make sure the backend server was restarted.',
+      });
+    } finally {
+      setPairingLoading(false);
+    }
+  };
+
+  const getMobileScannerUrl = () => {
+    if (!mobilePairData?.pairToken) return '';
+    const trimmedCustom = customBaseUrl.trim().replace(/\/+$/, '');
+    if (trimmedCustom) {
+      return `${trimmedCustom}/mobile-scanner?pair=${encodeURIComponent(mobilePairData.pairToken)}`;
+    }
+    const protocol = window.location.protocol;
+    const port = window.location.port ? `:${window.location.port}` : '';
+    const host = selectedLanIp || window.location.hostname;
+    return `${protocol}//${host}${port}/mobile-scanner?pair=${encodeURIComponent(mobilePairData.pairToken)}`;
+  };
 
   useEffect(() => {
     let html5QrCode = null;
@@ -241,17 +296,27 @@ export default function InvigilatorPage() {
             Verify student attendance (Booklet Issued) and final booklet submission by scanning the Code128 barcode or entering the Registration Number
           </p>
         </div>
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex flex-wrap items-center gap-2 shrink-0">
           <div className="hidden md:inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-emerald-50 border border-emerald-200 text-emerald-700 text-xs font-bold">
             <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-            <span>Scanner Ready</span>
+            <span>Live Sync ON</span>
           </div>
           <button
+            type="button"
+            onClick={openMobilePairing}
+            disabled={pairingLoading}
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white font-bold text-xs shadow transition disabled:opacity-60"
+          >
+            <Smartphone size={16} />
+            <span>{pairingLoading ? 'Generating QR...' : 'Connect Phone Scanner'}</span>
+          </button>
+          <button
+            type="button"
             onClick={() => setCameraOpen(!cameraOpen)}
             className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-[#6d1323] hover:bg-[#580f1c] text-white font-bold text-xs shadow transition"
           >
             <Camera size={16} />
-            <span>{cameraOpen ? 'Close Camera Scanner' : 'Open Camera Scanner'}</span>
+            <span>{cameraOpen ? 'Close Laptop Camera' : 'Laptop Camera'}</span>
           </button>
         </div>
       </div>
@@ -284,6 +349,121 @@ export default function InvigilatorPage() {
             Point Camera at University of Kigali Booklet Barcode
           </div>
           <div id="uok-camera-reader" className="w-full rounded-xl overflow-hidden bg-slate-900 min-h-[220px]" />
+        </div>
+      )}
+
+      {/* Mobile Phone Scanner QR Pairing Modal */}
+      {mobileModalOpen && mobilePairData && (
+        <div className="fixed inset-0 z-50 bg-slate-900/70 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-200 space-y-4">
+            <div className="flex items-center justify-between border-b pb-3">
+              <div className="flex items-center gap-2">
+                <div className="w-9 h-9 rounded-xl bg-emerald-100 text-emerald-700 flex items-center justify-center">
+                  <Smartphone size={20} />
+                </div>
+                <div>
+                  <h3 className="text-sm font-extrabold text-slate-900">
+                    Connect Mobile Phone Scanner
+                  </h3>
+                  <p className="text-[11px] text-slate-500">
+                    Scan booklets with your phone&apos;s rear camera — updates live!
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setMobileModalOpen(false)}
+                className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-500"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            {/* QR Code Display */}
+            <div className="flex flex-col items-center justify-center bg-slate-50 border-2 border-dashed border-slate-300 rounded-2xl p-4">
+              <img
+                src={`${API_BASE_URL}/qrcode?value=${encodeURIComponent(getMobileScannerUrl())}`}
+                alt="Mobile Scanner Pairing QR Code"
+                className="w-52 h-52 object-contain bg-white p-2 rounded-xl border border-slate-200 shadow-sm"
+              />
+              <div className="mt-2.5 text-[11px] font-bold text-slate-700 text-center">
+                {mobilePairData.session?.room_name || 'All Assigned Rooms'}
+                {mobilePairData.session?.exam_date ? ` • ${mobilePairData.session.exam_date}` : ''}
+                {mobilePairData.session?.module_code ? ` • ${mobilePairData.session.module_code}` : ''}
+              </div>
+            </div>
+
+            {/* Wi-Fi IP Selector (when multiple adapters exist) */}
+            {mobilePairData.lanIps && mobilePairData.lanIps.length > 0 && (
+              <div className="space-y-1.5 text-xs">
+                <label className="font-bold text-slate-600 flex items-center gap-1.5">
+                  <Wifi size={14} className="text-emerald-600" />
+                  <span>Laptop Wi-Fi / LAN Address</span>
+                </label>
+                <select
+                  value={selectedLanIp}
+                  onChange={(e) => {
+                    setSelectedLanIp(e.target.value);
+                    setCustomBaseUrl('');
+                  }}
+                  className="w-full px-3 py-2 rounded-lg border border-slate-300 text-xs font-mono"
+                >
+                  {mobilePairData.lanIps.map((item) => (
+                    <option key={item.address} value={item.address}>
+                      {item.address} ({item.interface})
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
+            {/* Optional Custom HTTPS Tunnel / Domain Override */}
+            <div className="space-y-1 text-xs">
+              <label className="font-bold text-slate-600 block">
+                Or Custom HTTPS URL (Optional — e.g. ngrok / Cloudflare)
+              </label>
+              <input
+                type="url"
+                value={customBaseUrl}
+                onChange={(e) => setCustomBaseUrl(e.target.value)}
+                placeholder="https://your-tunnel-url.trycloudflare.com"
+                className="w-full px-3 py-2 rounded-lg border border-slate-300 text-xs font-mono"
+              />
+            </div>
+
+            {/* Quick Instructions */}
+            <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-[11px] text-amber-900 space-y-1">
+              <div className="font-extrabold">How to Connect:</div>
+              <ol className="list-decimal list-inside space-y-0.5">
+                <li>Connect your phone to the <strong>same Wi-Fi</strong> as this laptop.</li>
+                <li>Point your phone&apos;s camera at the QR code above and open the link.</li>
+                <li>If prompted about the local HTTPS certificate, tap <strong>Advanced → Proceed</strong> once.</li>
+                <li>Tap <strong>Start Camera</strong> on your phone — every scan updates the database and emails the student automatically!</li>
+              </ol>
+            </div>
+
+            <div className="flex items-center justify-between gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => {
+                  navigator.clipboard?.writeText(getMobileScannerUrl());
+                  setCopiedLink(true);
+                  setTimeout(() => setCopiedLink(false), 2000);
+                }}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl border border-slate-300 hover:bg-slate-50 text-xs font-bold text-slate-700"
+              >
+                {copiedLink ? <Check size={14} className="text-emerald-600" /> : <Copy size={14} />}
+                <span>{copiedLink ? 'Link Copied!' : 'Copy Pairing Link'}</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setMobileModalOpen(false)}
+                className="px-4 py-2 rounded-xl bg-[#6d1323] text-white text-xs font-bold"
+              >
+                Done
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
