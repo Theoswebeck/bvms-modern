@@ -85,7 +85,11 @@ export default function InvigilatorPage() {
         code,
         action: verifyAction,
       });
-      setAlert({ type: 'success', text: res.data.message });
+      setAlert({
+        type: 'success',
+        text: res.data.message,
+        emailPreviewUrl: res.data.emailNotification?.previewUrl || null,
+      });
       setScanInput('');
       loadData();
     } catch (err) {
@@ -208,7 +212,11 @@ export default function InvigilatorPage() {
                   module_code: p.module_code,
                   action: 'Submitted',
                 });
-                setAlert({ type: 'success', text: res.data.message });
+                setAlert({
+                  type: 'success',
+                  text: res.data.message,
+                  emailPreviewUrl: res.data.emailNotification?.previewUrl || null,
+                });
                 loadData();
               }}
               className="px-2.5 py-1 rounded-lg bg-[#6d1323] hover:bg-[#580f1c] text-white font-bold text-[11px]"
@@ -252,9 +260,19 @@ export default function InvigilatorPage() {
         <div className={`p-4 rounded-xl border text-xs font-bold flex items-center justify-between shadow-sm ${
           alert.type === 'success' ? 'bg-emerald-50 border-emerald-300 text-emerald-900' : 'bg-red-50 border-red-300 text-red-800'
         }`}>
-          <div className="flex items-center gap-2.5">
+          <div className="flex flex-wrap items-center gap-2.5">
             {alert.type === 'success' ? <CheckCircle2 size={18} className="text-emerald-700" /> : <AlertCircle size={18} className="text-red-600" />}
             <span>{alert.text}</span>
+            {alert.emailPreviewUrl && (
+              <a
+                href={alert.emailPreviewUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="underline text-[#6d1323] hover:text-[#580f1c] font-extrabold"
+              >
+                Preview Sent Email
+              </a>
+            )}
           </div>
           <button onClick={() => setAlert(null)}><X size={16} /></button>
         </div>

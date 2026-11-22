@@ -2,6 +2,7 @@ const express = require('express');
 const bwipjs = require('bwip-js');
 const db = require('../db');
 const { authenticateToken } = require('../middlewares/auth');
+const { sendBookletSubmissionEmail } = require('../services/mailer');
 
 const router = express.Router();
 
@@ -83,7 +84,7 @@ router.post('/verify', async (req, res) => {
     const targetStatus = action || 'Submitted';
 
     const plansRes = await db.query(`
-      SELECT ep.*, s.firstname, s.lastname, m.module_name, r.room AS room_name
+      SELECT ep.*, s.firstname, s.lastname, s.email AS student_email, m.module_name, r.room AS room_name
       FROM exam_plan ep
       JOIN student s ON ep.reg_number = s.reg_number
       JOIN module m ON ep.module_code = m.module_code
@@ -123,6 +124,8 @@ router.post('/verify', async (req, res) => {
 
     const targetSitting = matched[0];
 
+    let emailNotification = null;
+
     if (targetStatus === 'Present') {
       await db.query(
         'UPDATE exam_plan SET exam_status = $1, checked_in_at = CURRENT_TIMESTAMP WHERE id = $2',
@@ -134,18 +137,57 @@ router.post('/verify', async (req, res) => {
         ['Irregularity', incident_note || 'Irregularity logged by invigilator', targetSitting.id]
       );
     } else {
+      const submittedAt = new Date();
       await db.query(
         'UPDATE exam_plan SET exam_status = $1, submitted_at = CURRENT_TIMESTAMP WHERE id = $2',
         ['Submitted', targetSitting.id]
       );
+
+      // Send submission confirmation email to the student (non-blocking if SMTP fails)
+      if (targetSitting.student_email) {
+        const invigilatorName = req.user
+          ? `${req.user.firstname || ''} ${req.user.lastname || ''}`.trim()
+          : 'Room Invigilator';
+        try {
+          emailNotification = await sendBookletSubmissionEmail({
+            toEmail: targetSitting.student_email,
+            firstname: targetSitting.firstname,
+            lastname: targetSitting.lastname,
+            regNumber: targetSitting.reg_number,
+            bookletCode: targetSitting.booklet_code,
+            moduleCode: targetSitting.module_code,
+            moduleName: targetSitting.module_name,
+            roomName: targetSitting.room_name,
+            examDate: targetSitting.exam_date_str,
+            seatNumber: targetSitting.seat_number,
+            invigilatorName,
+            submittedAt,
+          });
+        } catch (mailErr) {
+          console.error('Booklet submission email warning:', mailErr.message);
+          emailNotification = {
+            sent: false,
+            toEmail: targetSitting.student_email,
+            error: mailErr.message,
+          };
+        }
+      }
     }
 
+    const emailNote =
+      emailNotification?.sent
+        ? ` Confirmation email sent to ${emailNotification.toEmail}.`
+        : emailNotification && !emailNotification.sent
+          ? ` (Note: Email to ${emailNotification.toEmail} could not be delivered.)`
+          : '';
+
     return res.json({
-      message: `${targetSitting.firstname} ${targetSitting.lastname} (${targetSitting.reg_number}) marked as "${targetStatus}" for ${targetSitting.module_name}!`,
+      message: `${targetSitting.firstname} ${targetSitting.lastname} (${targetSitting.reg_number}) marked as "${targetStatus}" for ${targetSitting.module_name}!${emailNote}`,
       sitting: {
         ...targetSitting,
         exam_status: targetStatus,
       },
+      emailNotification,
     });
   } catch (err) {
     console.error('Verification error:', err);
