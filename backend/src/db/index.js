@@ -85,6 +85,24 @@ async function getInitialSeedQueries() {
   `;
 }
 
+async function ensureDatabaseExists(connectionString) {
+  try {
+    const adminUrl = connectionString.replace(/\/([^/?]+)(\?.*)?$/, '/postgres$2');
+    const dbNameMatch = connectionString.match(/\/([^/?]+)(\?.*)?$/);
+    const dbName = dbNameMatch ? dbNameMatch[1] : 'uok_bvms';
+    const adminPool = new Pool({ connectionString: adminUrl, connectionTimeoutMillis: 2500 });
+    const checkDb = await adminPool.query('SELECT 1 FROM pg_database WHERE datname = $1', [dbName]);
+    if (checkDb.rows.length === 0) {
+      console.log(`🛠️ Creating PostgreSQL database "${dbName}"...`);
+      await adminPool.query(`CREATE DATABASE "${dbName.replace(/"/g, '""')}"`);
+      console.log(`✅ Database "${dbName}" created successfully!`);
+    }
+    await adminPool.end();
+  } catch (e) {
+    // Let main connection attempt report the specific error
+  }
+}
+
 async function initDatabase() {
   if (pool) return pool;
 
@@ -93,6 +111,7 @@ async function initDatabase() {
   const schemaSql = fs.readFileSync(schemaPath, 'utf8');
 
   try {
+    await ensureDatabaseExists(connectionString);
     const pgPool = new Pool({
       connectionString,
       connectionTimeoutMillis: 2500,
@@ -107,7 +126,15 @@ async function initDatabase() {
       ) AS exists;
     `);
 
-    if (!checkRes.rows[0].exists) {
+    let needsSeed = !checkRes.rows[0].exists;
+    if (!needsSeed) {
+      const countRes = await client.query('SELECT COUNT(*) AS count FROM users');
+      if (Number(countRes.rows[0].count) === 0) {
+        needsSeed = true;
+      }
+    }
+
+    if (needsSeed) {
       console.log('📦 Initializing PostgreSQL schema and seeding University of Kigali data...');
       await client.query(schemaSql);
       const seedSql = await getInitialSeedQueries();
@@ -159,4 +186,5 @@ module.exports = {
   initDatabase,
   query,
   getDbStatus,
+  getInitialSeedQueries,
 };
