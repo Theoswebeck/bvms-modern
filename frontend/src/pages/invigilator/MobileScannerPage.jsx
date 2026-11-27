@@ -188,20 +188,37 @@ export default function MobileScannerPage() {
     let mounted = true;
     setCameraError('');
 
-    import('html5-qrcode').then(({ Html5Qrcode }) => {
+    import('html5-qrcode').then(({ Html5Qrcode, Html5QrcodeSupportedFormats }) => {
       if (!mounted) return;
-      const html5QrCode = new Html5Qrcode('uok-mobile-camera-reader');
+      const html5QrCode = new Html5Qrcode('uok-mobile-camera-reader', {
+        formatsToSupport: [
+          Html5QrcodeSupportedFormats.CODE_128,
+          Html5QrcodeSupportedFormats.QR_CODE,
+        ],
+        experimentalFeatures: {
+          useBarCodeDetectorIfSupported: true,
+        },
+        verbose: false,
+      });
       scannerRef.current = html5QrCode;
       html5QrCode
         .start(
           { facingMode: 'environment' },
           {
-            fps: 12,
-            qrbox: { width: 280, height: 110 },
-            aspectRatio: 1.5,
+            fps: 15,
+            qrbox: { width: 290, height: 115 },
+            disableFlip: false,
+            videoConstraints: {
+              facingMode: 'environment',
+              width: { ideal: 1280 },
+              height: { ideal: 720 },
+            },
           },
           (decodedText) => {
-            submitScannedCode(decodedText);
+            const cleaned = String(decodedText || '').trim();
+            if (cleaned.length >= 3 && /^[A-Za-z0-9/_-]+$/.test(cleaned)) {
+              submitScannedCode(cleaned);
+            }
           },
           () => {}
         )

@@ -57,12 +57,17 @@ router.get('/barcode', async (req, res) => {
     const pngBuffer = await bwipjs.toBuffer({
       bcid: 'code128',
       text: String(value),
-      scale: 3,
-      height: 12,
+      scale: 4,
+      height: 15,
+      paddingwidth: 14,
+      paddingheight: 8,
+      backgroundcolor: 'FFFFFF',
       includetext: true,
       textxalign: 'center',
+      textsize: 10,
     });
     res.set('Content-Type', 'image/png');
+    res.set('Cache-Control', 'no-store');
     res.send(pngBuffer);
   } catch (err) {
     console.error('Barcode generation error:', err);

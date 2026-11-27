@@ -10,9 +10,37 @@ import {
   Copy,
   Check,
   Wifi,
+  Upload,
+  FlipHorizontal,
 } from 'lucide-react';
 import api, { API_BASE_URL } from '../../api/client';
 import DataTable from '../../components/DataTable';
+
+function playSystemBeep(success = true) {
+  try {
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    if (!AudioCtx) return;
+    const ctx = new AudioCtx();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.type = success ? 'sine' : 'sawtooth';
+    osc.frequency.value = success ? 900 : 280;
+    gain.gain.setValueAtTime(0.18, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + (success ? 0.16 : 0.3));
+    osc.start();
+    osc.stop(ctx.currentTime + (success ? 0.17 : 0.32));
+  } catch {
+    // Optional audio feedback
+  }
+}
+
+function isLikelyUokCode(text = '') {
+  const cleaned = String(text).trim();
+  // Match UoK Registration Numbers (e.g. UoK/2024/IT/001) or Booklet Serials (e.g. UOK-BK-...) or configured student reg_numbers
+  return cleaned.length >= 3 && /^[A-Za-z0-9/_-]+$/.test(cleaned);
+}
 
 export default function InvigilatorPage() {
   const [assignments, setAssignments] = useState([]);
@@ -25,6 +53,10 @@ export default function InvigilatorPage() {
   const [scanInput, setScanInput] = useState('');
   const [verifyAction, setVerifyAction] = useState('Submitted');
   const [cameraOpen, setCameraOpen] = useState(false);
+  const [cameras, setCameras] = useState([]);
+  const [selectedCameraId, setSelectedCameraId] = useState('');
+  const [mirrorCamera, setMirrorCamera] = useState(false);
+  const [lastDetectedText, setLastDetectedText] = useState('');
   const [alert, setAlert] = useState(null);
   const [mobileModalOpen, setMobileModalOpen] = useState(false);
   const [mobilePairData, setMobilePairData] = useState(null);
@@ -33,6 +65,8 @@ export default function InvigilatorPage() {
   const [copiedLink, setCopiedLink] = useState(false);
   const [pairingLoading, setPairingLoading] = useState(false);
   const scannerRef = useRef(null);
+  const lastScanRef = useRef({ code: '', time: 0 });
+  const verifyCodeRef = useRef(null);
 
   const loadData = () => {
     api.get('/invigilator/my-schedule').then((res) => {
@@ -93,18 +127,67 @@ export default function InvigilatorPage() {
   };
 
   useEffect(() => {
-    let html5QrCode = null;
+    let mounted = true;
     if (cameraOpen) {
-      import('html5-qrcode').then(({ Html5Qrcode }) => {
-        html5QrCode = new Html5Qrcode('uok-camera-reader');
+      import('html5-qrcode').then(async ({ Html5Qrcode, Html5QrcodeSupportedFormats }) => {
+        if (!mounted) return;
+        try {
+          const devices = await Html5Qrcode.getCameras();
+          if (!mounted) return;
+          if (devices && devices.length > 0) {
+            setCameras(devices);
+            if (!selectedCameraId) {
+              setSelectedCameraId(devices[0].id);
+            }
+          }
+        } catch {
+          // Proceed with default facingMode constraint if camera enumeration fails
+        }
+
+        if (!mounted) return;
+        const html5QrCode = new Html5Qrcode('uok-camera-reader', {
+          formatsToSupport: [
+            Html5QrcodeSupportedFormats.CODE_128,
+            Html5QrcodeSupportedFormats.QR_CODE,
+          ],
+          experimentalFeatures: {
+            useBarCodeDetectorIfSupported: true,
+          },
+          verbose: false,
+        });
         scannerRef.current = html5QrCode;
+
+        const cameraSource = selectedCameraId
+          ? { deviceId: { exact: selectedCameraId } }
+          : { facingMode: 'user' };
+
         html5QrCode
           .start(
-            { facingMode: 'environment' },
-            { fps: 10, qrbox: { width: 250, height: 120 } },
+            cameraSource,
+            {
+              fps: 15,
+              qrbox: { width: 340, height: 130 },
+              disableFlip: false,
+              videoConstraints: {
+                ...(selectedCameraId ? { deviceId: { exact: selectedCameraId } } : {}),
+                width: { ideal: 1280 },
+                height: { ideal: 720 },
+              },
+            },
             (decodedText) => {
-              setScanInput(decodedText);
-              handleVerifyCode(decodedText);
+              const cleaned = String(decodedText || '').trim();
+              if (!isLikelyUokCode(cleaned)) return;
+
+              const now = Date.now();
+              if (lastScanRef.current.code === cleaned && now - lastScanRef.current.time < 2500) {
+                return;
+              }
+              lastScanRef.current = { code: cleaned, time: now };
+              setLastDetectedText(cleaned);
+              setScanInput(cleaned);
+              if (verifyCodeRef.current) {
+                verifyCodeRef.current(cleaned);
+              }
             },
             () => {}
           )
@@ -112,19 +195,52 @@ export default function InvigilatorPage() {
             console.warn('Camera start error:', err);
             setAlert({
               type: 'error',
-              text: 'Could not access webcam. You can still use a USB barcode scanner or type/click any Registration Number below.',
+              text: 'Could not access system webcam. Check browser camera permission or use "Scan Barcode Image" / manual entry below.',
             });
             setCameraOpen(false);
           });
       });
     }
     return () => {
+      mounted = false;
       if (scannerRef.current) {
         scannerRef.current.stop().catch(() => {});
         scannerRef.current = null;
       }
     };
-  }, [cameraOpen]);
+  }, [cameraOpen, selectedCameraId]);
+
+  const handleImageFileScan = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setAlert(null);
+    try {
+      const { Html5Qrcode, Html5QrcodeSupportedFormats } = await import('html5-qrcode');
+      const fileScanner = new Html5Qrcode('uok-file-scanner-temp', {
+        formatsToSupport: [
+          Html5QrcodeSupportedFormats.CODE_128,
+          Html5QrcodeSupportedFormats.QR_CODE,
+        ],
+        experimentalFeatures: {
+          useBarCodeDetectorIfSupported: true,
+        },
+        verbose: false,
+      });
+      const decodedText = await fileScanner.scanFile(file, false);
+      const cleaned = String(decodedText || '').trim();
+      setLastDetectedText(cleaned);
+      setScanInput(cleaned);
+      await handleVerifyCode(cleaned);
+    } catch {
+      playSystemBeep(false);
+      setAlert({
+        type: 'error',
+        text: 'Could not detect a Code128 barcode in that image. Try cropping closer to the barcode or ensure high contrast.',
+      });
+    } finally {
+      e.target.value = '';
+    }
+  };
 
   const handleVerifyCode = async (codeToVerify) => {
     const code = codeToVerify || scanInput;
@@ -138,6 +254,7 @@ export default function InvigilatorPage() {
         code,
         action: verifyAction,
       });
+      playSystemBeep(true);
       setAlert({
         type: 'success',
         text: res.data.message,
@@ -146,12 +263,17 @@ export default function InvigilatorPage() {
       setScanInput('');
       loadData();
     } catch (err) {
+      playSystemBeep(false);
       setAlert({
         type: 'error',
         text: err.response?.data?.error || 'Student verification failed',
       });
     }
   };
+
+  useEffect(() => {
+    verifyCodeRef.current = handleVerifyCode;
+  });
 
   const handleFormSubmit = (e) => {
     e.preventDefault();
@@ -360,12 +482,66 @@ export default function InvigilatorPage() {
         </div>
       )}
 
+      <div id="uok-file-scanner-temp" className="hidden" />
+
       {cameraOpen && (
-        <div className="bg-white rounded-2xl border-2 border-[#6d1323] p-4 shadow-md max-w-md mx-auto text-center">
-          <div className="text-xs font-bold text-slate-900 mb-2">
-            Point Camera at University of Kigali Booklet Barcode
+        <div className="bg-white rounded-2xl border-2 border-[#6d1323] p-5 shadow-md max-w-xl mx-auto space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b pb-2.5">
+            <div>
+              <div className="text-xs font-extrabold text-slate-900">
+                System Camera Code128 Barcode Scanner (HD Mode)
+              </div>
+              <div className="text-[11px] text-slate-500">
+                Hold the printed booklet barcode steady ~15–25 cm in front of the laptop camera
+              </div>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => setMirrorCamera(!mirrorCamera)}
+                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-300 hover:bg-slate-50 text-[11px] font-bold text-slate-700"
+                title="Mirror camera preview for easier aiming"
+              >
+                <FlipHorizontal size={13} />
+                <span>{mirrorCamera ? 'Unmirror' : 'Mirror View'}</span>
+              </button>
+              <label className="cursor-pointer inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-[11px] font-bold text-slate-800">
+                <Upload size={13} />
+                <span>Scan Image File</span>
+                <input type="file" accept="image/*" onChange={handleImageFileScan} className="hidden" />
+              </label>
+            </div>
           </div>
-          <div id="uok-camera-reader" className="w-full rounded-xl overflow-hidden bg-slate-900 min-h-[220px]" />
+
+          {cameras.length > 1 && (
+            <div className="flex items-center gap-2 text-xs">
+              <label className="font-bold text-slate-600 shrink-0">Select Camera:</label>
+              <select
+                value={selectedCameraId}
+                onChange={(e) => setSelectedCameraId(e.target.value)}
+                className="flex-1 px-2.5 py-1.5 rounded-lg border border-slate-300 text-xs"
+              >
+                {cameras.map((cam, idx) => (
+                  <option key={cam.id} value={cam.id}>
+                    {cam.label || `Camera ${idx + 1}`}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+
+          <div className={mirrorCamera ? 'scale-x-[-1]' : ''}>
+            <div
+              id="uok-camera-reader"
+              className="w-full rounded-xl overflow-hidden bg-slate-900 min-h-[260px]"
+            />
+          </div>
+
+          {lastDetectedText && (
+            <div className="text-center text-xs font-mono font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg py-1.5 px-3">
+              Last Scanned Barcode: {lastDetectedText}
+            </div>
+          )}
         </div>
       )}
 
