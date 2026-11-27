@@ -11,19 +11,42 @@ const router = express.Router();
 function getLanIpv4Addresses() {
   const nets = os.networkInterfaces();
   const ips = [];
+  const virtualPattern = /vethernet|wsl|hyper-v|docker|vbox|virtualbox|vmware|loopback|teredo|ischolat|vpn|tailscale/i;
+
   for (const name of Object.keys(nets)) {
+    const isVirtual = virtualPattern.test(name);
+    const isWifi = /wi-fi|wlan|wireless/i.test(name);
     for (const net of nets[name] || []) {
-      if (net.family === 'IPv4' && !net.internal) {
-        ips.push({ interface: name, address: net.address });
+      if (net.family === 'IPv4' && !net.internal && !net.address.startsWith('169.254.')) {
+        const isIphoneHotspot = net.address.startsWith('172.20.10.');
+        const isAndroidHotspot =
+          net.address.startsWith('192.168.43.') || net.address.startsWith('192.168.137.');
+        ips.push({
+          interface: name,
+          address: net.address,
+          isVirtual,
+          isWifi,
+          isHotspot: isIphoneHotspot || isAndroidHotspot,
+        });
       }
     }
   }
-  // Prefer standard Wi-Fi / LAN ranges (192.168.x.x, 10.x.x.x, 172.16-31.x.x)
+
+  // Sort: Real Wi-Fi & Mobile Hotspots (iPhone 172.20.10.x / Android 192.168.43.x) first, virtual adapters last
   ips.sort((a, b) => {
-    const score = (ip) =>
-      ip.startsWith('192.168.') ? 0 : ip.startsWith('10.') ? 1 : ip.startsWith('172.') ? 2 : 3;
-    return score(a.address) - score(b.address);
+    const score = (item) => {
+      if (item.isVirtual) return 100;
+      if (item.isWifi && item.isHotspot) return 0;
+      if (item.isWifi) return 1;
+      if (item.isHotspot) return 2;
+      if (item.address.startsWith('192.168.')) return 3;
+      if (item.address.startsWith('10.')) return 4;
+      if (item.address.startsWith('172.')) return 5;
+      return 10;
+    };
+    return score(a) - score(b);
   });
+
   return ips;
 }
 
@@ -100,7 +123,7 @@ router.get('/my-schedule', async (req, res) => {
 
     let assignments = assignRes.rows.map((a) => ({
       ...a,
-      exam_date: a.exam_date instanceof Date ? a.exam_date.toISOString().split('T')[0] : String(a.exam_date).split('T')[0],
+      exam_date: db.formatDateOnly(a.exam_date),
     }));
 
     if (req.user.user_type.toLowerCase() === 'invigilator' && invigilatorId) {
@@ -138,7 +161,7 @@ router.post('/verify', async (req, res) => {
 
     const normalizedPlans = plansRes.rows.map((p) => ({
       ...p,
-      exam_date_str: p.exam_date instanceof Date ? p.exam_date.toISOString().split('T')[0] : String(p.exam_date).split('T')[0],
+      exam_date_str: db.formatDateOnly(p.exam_date),
     }));
 
     // Filter by room_id, exam_date, and module_code if provided
@@ -296,7 +319,7 @@ router.get('/mobile-session', async (req, res) => {
 
     let items = plansRes.rows.map((p) => ({
       ...p,
-      exam_date: p.exam_date instanceof Date ? p.exam_date.toISOString().split('T')[0] : String(p.exam_date).split('T')[0],
+      exam_date: db.formatDateOnly(p.exam_date),
     }));
 
     if (room_id) items = items.filter((p) => Number(p.room_id) === Number(room_id));

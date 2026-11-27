@@ -37,10 +37,6 @@ export default function InvigilatorPage() {
   const loadData = () => {
     api.get('/invigilator/my-schedule').then((res) => {
       setAssignments(res.data.assignments);
-      if (res.data.assignments.length > 0 && !selectedDate) {
-        setSelectedDate(res.data.assignments[0].exam_date);
-        setSelectedRoomId(String(res.data.assignments[0].room_id));
-      }
     });
     api.get('/officer/exam-plans').then((res) => setPlans(res.data.examPlans));
   };
@@ -58,7 +54,9 @@ export default function InvigilatorPage() {
     setPairingLoading(true);
     setAlert(null);
     try {
-      const activeRoom = assignments.find((a) => String(a.room_id) === String(selectedRoomId));
+      const activeRoom =
+        assignedRoomsForDate.find((a) => String(a.room_id) === String(selectedRoomId)) ||
+        assignments.find((a) => String(a.room_id) === String(selectedRoomId));
       const res = await api.post('/invigilator/mobile-pair', {
         room_id: selectedRoomId || undefined,
         room_name: activeRoom?.room_name || undefined,
@@ -160,8 +158,27 @@ export default function InvigilatorPage() {
     handleVerifyCode(scanInput);
   };
 
-  const assignedDates = [...new Set(assignments.map((a) => a.exam_date))];
-  const assignedRoomsForDate = assignments.filter((a) => !selectedDate || a.exam_date === selectedDate);
+  // Combine dates from both invigilator assignments and scheduled exam timetables so no date is hidden
+  const assignedDates = [
+    ...new Set([
+      ...assignments.map((a) => a.exam_date),
+      ...plans.map((p) => p.exam_date),
+    ].filter(Boolean)),
+  ].sort((a, b) => b.localeCompare(a));
+
+  // Combine rooms from both assignments and exam plans for the selected date (deduplicated by room_id)
+  const assignedRoomsForDate = [
+    ...new Map(
+      [
+        ...assignments
+          .filter((a) => !selectedDate || a.exam_date === selectedDate)
+          .map((a) => [Number(a.room_id), { id: `assign-${a.room_id}`, room_id: a.room_id, room_name: a.room_name }]),
+        ...plans
+          .filter((p) => !selectedDate || p.exam_date === selectedDate)
+          .map((p) => [Number(p.room_id), { id: `plan-${p.room_id}`, room_id: p.room_id, room_name: p.room_name }]),
+      ]
+    ).values(),
+  ];
 
   const visiblePlans = plans.filter((p) => {
     if (selectedDate && p.exam_date !== selectedDate) return false;
@@ -410,7 +427,9 @@ export default function InvigilatorPage() {
                 >
                   {mobilePairData.lanIps.map((item) => (
                     <option key={item.address} value={item.address}>
-                      {item.address} ({item.interface})
+                      {item.address} ({item.interface}
+                      {item.isHotspot ? ' • Mobile Hotspot' : ''}
+                      {item.isVirtual ? ' • Virtual/WSL - Skip' : ''})
                     </option>
                   ))}
                 </select>

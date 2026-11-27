@@ -224,7 +224,7 @@ router.get('/invigilator-assignments', async (req, res) => {
     `);
     const rows = fallbackRes.rows.map((r) => ({
       ...r,
-      exam_date: r.exam_date instanceof Date ? r.exam_date.toISOString().split('T')[0] : String(r.exam_date).split('T')[0],
+      exam_date: db.formatDateOnly(r.exam_date),
     }));
     return res.json({ assignments: rows });
   }
@@ -411,13 +411,13 @@ router.get('/exam-plans', async (req, res) => {
 
     const invMap = {};
     for (const ia of invAssignRes.rows) {
-      const dateStr = ia.exam_date instanceof Date ? ia.exam_date.toISOString().split('T')[0] : String(ia.exam_date).split('T')[0];
+      const dateStr = db.formatDateOnly(ia.exam_date);
       const key = `${ia.room_id}_${dateStr}`;
       invMap[key] = ia;
     }
 
     let plans = allPlansRes.rows.map((p) => {
-      const dateStr = p.exam_date instanceof Date ? p.exam_date.toISOString().split('T')[0] : String(p.exam_date).split('T')[0];
+      const dateStr = db.formatDateOnly(p.exam_date);
       const inv = invMap[`${p.room_id}_${dateStr}`] || null;
       return {
         ...p,

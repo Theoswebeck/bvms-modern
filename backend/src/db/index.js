@@ -1,8 +1,23 @@
-const { Pool } = require('pg');
+const { Pool, types } = require('pg');
 const fs = require('fs');
 const path = require('path');
 const bcrypt = require('bcryptjs');
 require('dotenv').config();
+
+// Prevent node-postgres from converting PostgreSQL DATE (OID 1082) into a local-midnight JS Date
+// (which shifts backward by 1 day when .toISOString() converts local midnight to UTC in UTC+2).
+types.setTypeParser(1082, (val) => val);
+
+function formatDateOnly(val) {
+  if (!val) return '';
+  if (val instanceof Date) {
+    const y = val.getFullYear();
+    const m = String(val.getMonth() + 1).padStart(2, '0');
+    const d = String(val.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  }
+  return String(val).split('T')[0];
+}
 
 let pool = null;
 let isUsingFallback = false;
@@ -187,4 +202,5 @@ module.exports = {
   query,
   getDbStatus,
   getInitialSeedQueries,
+  formatDateOnly,
 };
